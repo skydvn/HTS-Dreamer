@@ -187,6 +187,32 @@ defaults:
       flat_topk: 48
       sgf_action_units: 18
 
+    htp:
+      enabled: false          # turn on via `htp_atari100k` preset below
+      grad_to_backbone: false # false = post-hoc (App. A.3), true = fully joint
+      proj:
+        dims: [ 128, 256, 512, 1024, 2048 ]
+        hidden: 512
+        layers: 2
+        norm: rms
+        act: silu             # matches your codebase-wide default
+        separable: false
+        outscale: 1.0
+      recon:
+        hidden: 512
+        layers: 1
+        norm: rms
+        act: silu
+        outscale: 1.0
+      pdyn:
+        strides: [ 16, 8, 4, 2, 1 ]   # non-increasing: compact prefix -> longer stride
+        hidden: 512
+        layers: 2
+        norm: rms
+        act: silu
+        outscale: 1.0
+    slowhtp: { rate: 0.02, every: 1 }   # mirrors your existing slowvalue
+
 size1m: &size1m
   .*\.rssm: {deter: 512, hidden: 64, classes: 4}
   .*\.depth: 4
@@ -251,6 +277,8 @@ hts_v1:
 
 hts_v2:
   agent.hts.impl: hts2
+
+
 
 hts1_atari100k:
   task: atari100k_pong
@@ -515,3 +543,25 @@ debug:
     .*\.hidden: 3
     .*\.blocks: 4
     .*\.depth: 2
+
+htp_atari100k:
+  task: atari100k_pong
+  run: {steps: 1.1e5, envs: 1, train_ratio: 256}
+  logger.filter: 'score|length|fps|ratio|train/loss/|train/rand/|train/htp/'
+  agent.htp.enabled: true
+
+# Ablation toggles (compose on top of htp_atari100k):
+htp_separable:
+  agent.htp.proj.separable: true            # Eq. 37 stronger isolation
+
+htp_joint:
+  agent.htp.grad_to_backbone: true          # App. A.3 fully-joint regime
+
+htp_matryoshka_only:                        # drop multi-stride, keep progressive recon
+  agent.loss_scales.htp_pdyn: 0.0
+
+htp_pdyn_only:                              # drop progressive recon, keep multi-stride
+  agent.loss_scales.htp_rec: 0.0
+
+htp_reverse_strides:                        # sanity check — reverses the paper's inductive bias
+  agent.htp.pdyn.strides: [1, 2, 4, 8, 16]
