@@ -195,7 +195,7 @@ class Encoder(nj.Module):
     self.veckeys = [k for k, s in obs_space.items() if len(s.shape) <= 2]
     self.imgkeys = [k for k, s in obs_space.items() if len(s.shape) == 3]
     self.depths = tuple(self.depth * mult for mult in self.mults)
-    self.kw = kw
+    self.kw = kwfeat['deter']
 
   @property
   def entry_space(self):
