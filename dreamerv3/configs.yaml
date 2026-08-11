@@ -549,6 +549,8 @@ htp_atari100k:
   run: {steps: 1.1e5, envs: 1, train_ratio: 256}
   logger.filter: 'score|length|fps|ratio|train/loss/|train/rand/|train/htp/'
   agent.htp.enabled: true
+  agent.loss_scales.htp_rec: 1.0
+  agent.loss_scales.htp_pdyn: 1.0
 
 # Ablation toggles (compose on top of htp_atari100k):
 htp_separable:

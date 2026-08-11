@@ -142,7 +142,12 @@ class Agent_HTP(embodied.jax.Agent):
     scales = self.config.loss_scales.copy()
     rec = scales.pop('rec')
     scales.update({k: rec for k in dec_space})
-    if not self.htp_enabled:
+    if self.htp_enabled:
+      # Insert defaults if the user forgot to add HTP loss scales.
+      # These match the values in the shipped configs.yaml.
+      scales.setdefault('htp_rec', 1.0)
+      scales.setdefault('htp_pdyn', 1.0)
+    else:
       # Drop the HTP scales so we don't error out when checking loss keys.
       scales.pop('htp_rec', None)
       scales.pop('htp_pdyn', None)
