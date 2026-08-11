@@ -18,7 +18,7 @@ import ruamel.yaml as yaml
 
 def main(argv=None):
   from .agent_htp import Agent_HTP
-  [elements.print(line) for line in Agent.banner]
+  [elements.print(line) for line in Agent_HTP.banner]
 
   configs = elements.Path(folder / 'configs.yaml').read()
   configs = yaml.YAML(typ='safe').load(configs)
@@ -142,7 +142,7 @@ def make_agent(config):
     return embodied.RandomAgent(obs_space, act_space)
   cpdir = elements.Path(config.logdir)
   cpdir = cpdir.parent if config.replicas > 1 else cpdir
-  return Agent(obs_space, act_space, elements.Config(
+  return Agent_HTP(obs_space, act_space, elements.Config(
       **config.agent,
       logdir=config.logdir,
       seed=config.seed,
