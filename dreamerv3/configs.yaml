@@ -570,3 +570,6 @@ htp_pdyn_only:                              # drop progressive recon, keep multi
 htp_reverse_strides:                        # sanity check — reverses the paper's inductive bias
   agent.htp.pdyn.strides: [1, 2, 4, 8, 16]
 
+htp_empty_projection:                       # HTP scaffold, no auxiliary supervision
+  agent.loss_scales.htp_rec: 0.0
+  agent.loss_scales.htp_pdyn: 0.0

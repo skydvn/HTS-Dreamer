@@ -65,6 +65,13 @@ python -m dreamerv3.main_hts1 --configs hts_atari100k size12m --task atari100k_b
 python -m dreamerv3.main_hts2 --configs hts_atari100k size12m hts_paper_core_zfull_topk_detail --task atari100k_breakout
 ```
 
+Dreamer-V3 Call on Agent_HTP
+```bash
+python -m dreamerv3.main_htp --configs atari100k wandb --task atari100k_breakout
+python -m dreamerv3.main_htp --configs atari100k size12m wandb --task atari100k_breakout
+
+```
+
 W&B/log metrics include:
 
 ```text
