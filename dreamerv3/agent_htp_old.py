@@ -1,39 +1,30 @@
 """
-DreamerV3 agent with Hierarchical Temporal Prefix World Model (HTP-WM).
+DreamerV3 agent modified to include the Hierarchical Temporal Prefix World
+Model (HTP-WM) auxiliary objective.
 
-Extended in this revision to support Slim-HTP and related ablations via two
-new config flags:
+Changes with respect to the vanilla DreamerV3 agent:
 
-    agent.htp.use_proj      (default: true)
-        If false, skip the learned projection S_ψ. z_t becomes an alias for h_t.
-        Actor, critic, reward, and continuation heads consume h_t directly.
-        The slow projection is also skipped.
+  * `feat2tensor` no longer returns the raw backbone latent `h_t` directly.
+    Instead, when HTP is enabled, it returns the ordered representation
+    `z_t = S_ψ(h_t)`. The reward, continuation, policy, and value heads all
+    operate on `z_t`. The decoder still consumes the raw `{deter, stoch}` dict.
 
-    agent.htp.use_recon     (default: true)
-        If false, skip the progressive reconstruction loss (htp_recon).
-        Only useful when use_proj is also false; with a projection present,
-        htp_recon is meaningful even if downweighted via loss scales.
+  * Two auxiliary losses are added to the world-model objective:
+        `htp_rec`  — progressive prefix reconstruction (Eq. 4)
+        `htp_pdyn` — multi-stride prefix dynamics       (Eq. 7)
 
-    agent.htp.use_vicreg    (default: false)
-        If true, add a lightweight variance regularizer on each prefix that
-        prevents collapse. Useful when use_proj=false and use_recon=false
-        (Slim-HTP), since neither slow-target nor recon anti-collapse
-        mechanisms are present. Also applies when the projection is on.
+  * A slow EMA copy of the ordered projection provides prediction targets
+    for the multi-stride objective, following the SlowModel pattern used
+    for the value function.
 
-Config matrix supported by this file (all with htp.enabled=true):
+  * Latent imagination is UNCHANGED: it uses `self.dyn.imagine`, i.e. the
+    RSSM backbone's one-step dynamics. The HTP predictors are auxiliary
+    representation-learning modules and are never used to unroll imagined
+    trajectories.
 
-    use_proj  use_recon  What it is
-    ─────────────────────────────────────────────────────────────────────
-    true      true       Original HTP-WM as in the paper (htp_full)
-    true      false      Projection kept, recon dropped (htp_pdyn_only)
-    false     false      Slim-HTP: pdyn on h_t prefixes, no projection,
-                         no recon. Requires grad_to_backbone=true to have
-                         any effect on control.
-    false     true       NOT SUPPORTED. Reconstructing h_t from prefixes
-                         of h_t is degenerate ("copy yourself" trivial
-                         component). Raises at construction time.
-
-Setting htp.enabled=false restores vanilla DreamerV3 behaviour.
+Setting `config.htp.enabled = False` restores the vanilla DreamerV3 behaviour
+without ever constructing the HTP modules, so this file is a drop-in
+replacement.
 """
 
 import re
@@ -55,7 +46,7 @@ f32 = jnp.float32
 i32 = jnp.int32
 sg = lambda xs, skip=False: xs if skip else jax.lax.stop_gradient(xs)
 sample = lambda xs: jax.tree.map(lambda x: x.sample(nj.seed()), xs)
-prefix_fn = lambda xs, p: {f'{p}/{k}': v for k, v in xs.items()}
+prefix = lambda xs, p: {f'{p}/{k}': v for k, v in xs.items()}
 concat = lambda xs, a: jax.tree.map(lambda *x: jnp.concatenate(x, a), *xs)
 isimage = lambda s: s.dtype == np.uint8 and len(s.shape) == 3
 
@@ -88,62 +79,30 @@ class Agent_HTP(embodied.jax.Agent):
     }[config.dec.typ](dec_space, **config.dec[config.dec.typ], name='dec')
 
     # ------------------------------------------------------------------ HTP-WM
+    # Base representation dimensionality h_t = concat(deter, stoch_flat).
     dyn_cfg = config.dyn[config.dyn.typ]
     self.feat_dim = int(dyn_cfg['deter'] + dyn_cfg['stoch'] * dyn_cfg['classes'])
 
     htp_cfg = config.htp
-    self.htp_enabled  = bool(htp_cfg.enabled)
-    self.htp_use_proj = bool(htp_cfg.get('use_proj',  True))
-    self.htp_use_recon = bool(htp_cfg.get('use_recon', True))
-    self.htp_use_vicreg = bool(htp_cfg.get('use_vicreg', False))
-    self.htp_vicreg_gamma = float(htp_cfg.get('vicreg_gamma', 1.0))
-    self.htp_vicreg_scale = float(htp_cfg.get('vicreg_scale', 1.0))
-
-    # Guard against the unsupported combination.
-    if self.htp_enabled and (not self.htp_use_proj) and self.htp_use_recon:
-      raise ValueError(
-          "htp.use_proj=false with htp.use_recon=true is not supported: "
-          "reconstructing h_t from prefixes of h_t is trivially degenerate. "
-          "Set htp.use_recon=false when disabling the projection, or use the "
-          "VICReg regularizer for anti-collapse instead.")
-
+    self.htp_enabled = bool(htp_cfg.enabled)
     if self.htp_enabled:
-      # ---- Projection (optional) ----
-      if self.htp_use_proj:
-        self.htp_proj = htp_mod.OrderedProjection(
-            **htp_cfg.proj, name='htp_proj')
-        self.slow_htp_proj = embodied.jax.SlowModel(
-            htp_mod.OrderedProjection(**htp_cfg.proj, name='slow_htp_proj'),
-            source=self.htp_proj, **config.slowhtp)
-        self.repr_dim = int(self.htp_proj.output_dim)
-      else:
-        self.htp_proj = None
-        self.slow_htp_proj = None
-        self.repr_dim = self.feat_dim
-
-      # ---- Progressive reconstruction (optional) ----
-      if self.htp_use_recon:
-        self.htp_recon = htp_mod.ProgressiveRecon(
-            feat_dim=self.feat_dim, **htp_cfg.recon, name='htp_recon')
-      else:
-        self.htp_recon = None
-
-      # ---- Multi-stride prefix dynamics (always present when HTP is on) ----
-      # When use_proj=false, pdyn.dims must sum-boundary-wise fit inside
-      # feat_dim rather than proj.output_dim. The user is responsible for
-      # setting agent.htp.pdyn.dims accordingly in configs.yaml.
+      # Learned ordered projection S_ψ.
+      self.htp_proj = htp_mod.OrderedProjection(
+          **htp_cfg.proj, name='htp_proj')
+      # Slow EMA copy used to produce targets for the multi-stride objective.
+      # NOTE: SlowModel wraps a *fresh* module and periodically copies params
+      # from `source`. We build a second OrderedProjection with the same
+      # config as the online one.
+      self.slow_htp_proj = embodied.jax.SlowModel(
+          htp_mod.OrderedProjection(**htp_cfg.proj, name='slow_htp_proj'),
+          source=self.htp_proj, **config.slowhtp)
+      # L residual reconstruction heads and L stride-specific predictors.
+      self.htp_recon = htp_mod.ProgressiveRecon(
+          feat_dim=self.feat_dim, **htp_cfg.recon, name='htp_recon')
       self.htp_pdyn = htp_mod.MultiStridePDyn(
           **htp_cfg.pdyn, name='htp_pdyn')
-
-      # Sanity check on pdyn.dims when there's no projection.
-      if not self.htp_use_proj:
-        max_dim = max(htp_cfg.pdyn.dims)
-        if max_dim > self.feat_dim:
-          raise ValueError(
-              f"htp.pdyn.dims max ({max_dim}) exceeds feat_dim ({self.feat_dim}). "
-              f"When use_proj=false, prefix boundaries must fit inside h_t. "
-              f"Suggested dims for feat_dim={self.feat_dim}: "
-              f"[128, 512, 2048, 5120, {self.feat_dim}]")
+      # The output dimension seen by the downstream heads.
+      self.repr_dim = int(self.htp_proj.output_dim)
     else:
       self.htp_proj = None
       self.slow_htp_proj = None
@@ -174,33 +133,24 @@ class Agent_HTP(embodied.jax.Agent):
     modules = [self.dyn, self.enc, self.dec, self.rew, self.con,
                self.pol, self.val]
     if self.htp_enabled:
-      modules.append(self.htp_pdyn)
-      if self.htp_use_proj:  modules.append(self.htp_proj)
-      if self.htp_use_recon: modules.append(self.htp_recon)
+      modules.extend([self.htp_proj, self.htp_recon, self.htp_pdyn])
     self.modules = modules
     self.opt = embodied.jax.Optimizer(
         self.modules, self._make_opt(**config.opt), summary_depth=1,
         name='opt')
 
-    # Loss-scale bookkeeping. Only include HTP scales for losses that will
-    # actually be produced.
     scales = self.config.loss_scales.copy()
     rec = scales.pop('rec')
     scales.update({k: rec for k in dec_space})
     if self.htp_enabled:
-      if self.htp_use_recon:
-        scales.setdefault('htp_rec', 1.0)
-      else:
-        scales.pop('htp_rec', None)
+      # Insert defaults if the user forgot to add HTP loss scales.
+      # These match the values in the shipped configs.yaml.
+      scales.setdefault('htp_rec', 1.0)
       scales.setdefault('htp_pdyn', 1.0)
-      if self.htp_use_vicreg:
-        scales.setdefault('htp_vicreg', self.htp_vicreg_scale)
-      else:
-        scales.pop('htp_vicreg', None)
     else:
-      scales.pop('htp_rec',    None)
-      scales.pop('htp_pdyn',   None)
-      scales.pop('htp_vicreg', None)
+      # Drop the HTP scales so we don't error out when checking loss keys.
+      scales.pop('htp_rec', None)
+      scales.pop('htp_pdyn', None)
     self.scales = scales
 
   # ---------------------------------------------------------------------
@@ -215,15 +165,14 @@ class Agent_HTP(embodied.jax.Agent):
 
   def feat2tensor(self, feat):
     """
-    Representation supplied to reward, continuation, policy, and value heads.
+    Representation supplied to reward/continuation/policy/value heads.
 
-    Three regimes:
-      * htp.enabled=false:                 returns h_t (naive DreamerV3)
-      * htp.enabled=true, use_proj=true:   returns z_t = S_ψ(h_t)
-      * htp.enabled=true, use_proj=false:  returns h_t (Slim-HTP)
+    When HTP is enabled this returns z_t = S_ψ(h_t) (Eq. 20). Otherwise it
+    returns the raw backbone latent h_t exactly as the vanilla DreamerV3
+    agent does.
     """
     h = self.feat2h(feat)
-    if self.htp_enabled and self.htp_use_proj:
+    if self.htp_enabled:
       return self.htp_proj(h)
     return h
 
@@ -231,7 +180,7 @@ class Agent_HTP(embodied.jax.Agent):
 
   @property
   def policy_keys(self):
-    if self.htp_enabled and self.htp_use_proj:
+    if self.htp_enabled:
       return '^(enc|dyn|dec|pol|htp_proj)/'
     return '^(enc|dyn|dec|pol)/'
 
@@ -289,7 +238,7 @@ class Agent_HTP(embodied.jax.Agent):
         self.loss, carry, obs, prevact, training=True, has_aux=True)
     metrics.update(mets)
     self.slowval.update()
-    if self.htp_enabled and self.htp_use_proj:
+    if self.htp_enabled:
       self.slow_htp_proj.update()
     outs = {}
     if self.config.replay_context:
@@ -320,65 +269,42 @@ class Agent_HTP(embodied.jax.Agent):
         dec_carry, repfeat, reset, training)
 
     # -------------------------------------------------- HTP-WM auxiliary losses
-    h_t = self.feat2h(repfeat)  # (B, T, feat_dim)
+    # Compute the base representation h_t once. We stop gradients from HTP
+    # losses through the backbone by default; users who want to run in the
+    # "fully joint" regime (App. A.3) can flip config.htp.grad_to_backbone.
+    h_t = self.feat2h(repfeat)                                    # (B, T, feat_dim)
 
     if self.htp_enabled:
-      # Decide whether HTP gradients reach the RSSM backbone.
-      # When use_proj=false, grad_to_backbone MUST be true for the loss to
-      # have any effect (there's no projection to absorb gradients).
-      if not self.htp_use_proj and not self.config.htp.grad_to_backbone:
-        # This is a valid configuration but produces a decorative loss.
-        # We honour it (user might want it as a sanity-check arm) but note
-        # that pdyn will not shape h_t at all.
-        h_for_z = sg(h_t)
-      else:
-        h_for_z = h_t if self.config.htp.grad_to_backbone else sg(h_t)
+      h_for_z = h_t if self.config.htp.grad_to_backbone else sg(h_t)
+      z_t = self.htp_proj(h_for_z)                                # (B, T, D)
 
-      # ---- Compute z_t (online) and z_slow (target) ----
-      if self.htp_use_proj:
-        z_t     = self.htp_proj(h_for_z)               # (B, T, D)
-        z_slow  = self.slow_htp_proj(sg(h_t))          # (B, T, D)
-      else:
-        z_t     = h_for_z                              # z_t IS h_t
-        z_slow  = sg(h_t)                              # target: RSSM's own output
+      # Progressive reconstruction of the (frozen) backbone latent.
+      rec_loss, rec_per_level = self.htp_recon(z_t, sg(h_t))       # (B, T)
+      losses['htp_rec'] = rec_loss
+      for ell, err in enumerate(rec_per_level):
+        metrics[f'htp_rec_l{ell}'] = err.mean()
 
-      # ---- Progressive reconstruction (only when use_recon=true) ----
-      if self.htp_use_recon:
-        rec_loss, rec_per_level = self.htp_recon(z_t, sg(h_t))
-        losses['htp_rec'] = rec_loss
-        for ell, err in enumerate(rec_per_level):
-          metrics[f'htp_rec_l{ell}'] = err.mean()
+      # Multi-stride prefix dynamics with slow-target prefixes.
+      # Target: pass sg(h) through the *slow* projection.
+      z_slow = self.slow_htp_proj(sg(h_t))                         # (B, T, D)
 
-      # ---- Multi-stride prefix dynamics ----
+      # Flatten actions to a single (B, T, act_flat_dim) tensor.
+      # `prevact[t]` in DreamerV3 convention is the action that led INTO
+      # state t, i.e. a_{t-1}. For our multi-step prediction from state t
+      # to state t + Δ we need a_t, a_{t+1}, ..., a_{t+Δ-1}, which live at
+      # prevact[t+1], prevact[t+2], ..., prevact[t+Δ]. We therefore shift
+      # by one and pad the last position with zeros (that final position is
+      # not usable as an input to a Δ-step predictor anyway and is masked
+      # out inside MultiStridePDyn).
       act_flat_full = htp_mod.flatten_action_dict(prevact, self.act_space)
       pad_last = jnp.zeros_like(act_flat_full[:, :1])
       act_seq_full = jnp.concatenate(
-          [act_flat_full[:, 1:], pad_last], axis=1)    # (B, T, A)
+          [act_flat_full[:, 1:], pad_last], axis=1)               # (B, T, A)
 
       pdyn_loss, pdyn_per_level = self.htp_pdyn(z_t, z_slow, act_seq_full)
       losses['htp_pdyn'] = pdyn_loss
       for info in pdyn_per_level:
         metrics[f'htp_pdyn_delta{int(info["stride"])}'] = info['err_mean']
-
-      # ---- VICReg-style variance regularizer (Slim-HTP anti-collapse) ----
-      if self.htp_use_vicreg:
-        # For each prefix level, penalise any prefix coordinate whose batch
-        # std falls below gamma. Prevents any coord from collapsing to a
-        # constant across the batch/time axis.
-        vic_terms = []
-        # Work on z_t (which is h_t when use_proj=false, or the projection
-        # otherwise). Using z_t means we regularise whatever the heads see.
-        for ell, d_ell in enumerate(self.htp_pdyn.dims):
-          prefix_ell = z_t[..., :int(d_ell)]                     # (B, T, d_ell)
-          flat = prefix_ell.reshape((-1, int(d_ell)))            # (B*T, d_ell)
-          std = jnp.sqrt(flat.var(axis=0) + 1e-4)                # (d_ell,)
-          term = jnp.mean(jax.nn.relu(self.htp_vicreg_gamma - std) ** 2)
-          vic_terms.append(term)
-          metrics[f'htp_vic_l{ell}_mean_std'] = std.mean()
-        vic_loss = jnp.stack(vic_terms).mean()                   # scalar
-        # Broadcast to (B, T) so it composes with the other per-timestep losses
-        # via the same .mean() aggregation used at the bottom of loss().
-        losses['htp_vicreg'] = jnp.full((B, T), vic_loss, dtype=vic_loss.dtype)
     # ------------------------------------------------------------------------
 
     inp = sg(self.feat2tensor(repfeat), skip=self.config.reward_grad)
@@ -401,6 +327,8 @@ class Agent_HTP(embodied.jax.Agent):
     K = min(self.config.imag_last or T, T)
     H = self.config.imag_length
     starts = self.dyn.starts(dyn_entries, dyn_carry, K)
+    # Imagination policy consumes z_t (via feat2tensor) which projects through
+    # the online HTP projection when enabled.
     policyfn = lambda feat: sample(self.pol(self.feat2tensor(feat), 1))
     _, imgfeat, imgprevact = self.dyn.imagine(starts, policyfn, H, training)
     first = jax.tree.map(
@@ -444,7 +372,7 @@ class Agent_HTP(embodied.jax.Agent):
           horizon=self.config.horizon,
           **self.config.repl_loss)
       losses.update(los)
-      metrics.update(prefix_fn(mets, 'reploss'))
+      metrics.update(prefix(mets, 'reploss'))
 
     assert set(losses.keys()) == set(self.scales.keys()), (
         sorted(losses.keys()), sorted(self.scales.keys()))
@@ -466,10 +394,12 @@ class Agent_HTP(embodied.jax.Agent):
     RB = min(6, B)
     metrics = {}
 
+    # Train metrics
     _, (new_carry, entries, outs, mets) = self.loss(
         carry, obs, prevact, training=False)
     mets.update(mets)
 
+    # Grad norms
     if self.config.report_gradnorms:
       for key in self.scales:
         try:
@@ -480,6 +410,7 @@ class Agent_HTP(embodied.jax.Agent):
         except KeyError:
           print(f'Skipping gradnorm summary for missing loss: {key}')
 
+    # Open loop
     firsthalf = lambda xs: jax.tree.map(lambda x: x[:RB, :T // 2], xs)
     secondhalf = lambda xs: jax.tree.map(lambda x: x[:RB, T // 2:], xs)
     dyn_carry = jax.tree.map(lambda x: x[:RB], dyn_carry)
@@ -495,6 +426,7 @@ class Agent_HTP(embodied.jax.Agent):
         dec_carry, imgfeat, jnp.zeros_like(secondhalf(obs['is_first'])),
         training=False)
 
+    # Video preds
     for key in self.dec.imgkeys:
       assert obs[key].dtype == jnp.uint8
       true = obs[key][:RB]

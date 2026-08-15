@@ -171,6 +171,7 @@ class Agent(embodied.jax.Agent):
     metrics.update(mets)
     dec_carry, dec_entries, recons = self.dec(
         dec_carry, repfeat, reset, training)
+
     inp = sg(self.feat2tensor(repfeat), skip=self.config.reward_grad)
     losses['rew'] = self.rew(inp, 2).loss(obs['reward'])
     con = f32(~obs['is_terminal'])

@@ -17,7 +17,7 @@ import ruamel.yaml as yaml
 
 
 def main(argv=None):
-  from .agent_htp import Agent_HTP
+  from .agent_htp_old import Agent_HTP
   [elements.print(line) for line in Agent_HTP.banner]
 
   configs = elements.Path(folder / 'configs.yaml').read()
@@ -132,7 +132,7 @@ def main(argv=None):
 
 
 def make_agent(config):
-  from .agent_htp import Agent_HTP
+  from .agent_htp_old import Agent_HTP
   env = make_env(config, 0)
   notlog = lambda k: not k.startswith('log/')
   obs_space = {k: v for k, v in env.obs_space.items() if notlog(k)}

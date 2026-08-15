@@ -18,6 +18,6 @@ Public surface:
 
 from . import htp
 from . import rssm
-from .agent_htp import Agent_HTP
+from .agent_htp_old import Agent_HTP
 
 __all__ = ['Agent_HTP', 'htp', 'rssm']
