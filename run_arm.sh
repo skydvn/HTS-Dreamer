@@ -49,7 +49,7 @@ esac
 
 # ---------------------------------------------------- W&B labels (match the tracker)
 RUN_NAME="${ARM}_${TASK}_seed${SEED}"
-export WANDB_PROJECT="${WANDB_PROJECT:-htp-wm}"
+export WANDB_PROJECT="${WANDB_PROJECT:-HTS-Dreamer}"
 export WANDB_GROUP="${WANDB_GROUP:-${TASK}-ablation}"
 export WANDB_JOB_TYPE="$ARM"
 export WANDB_RUN_NAME="$RUN_NAME"
