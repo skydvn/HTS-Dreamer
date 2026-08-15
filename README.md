@@ -44,7 +44,7 @@ The shared entrypoint `dreamerv3.main_hts` chooses the implementation from:
 --agent.hts.impl hts2
 ```
 
-`hts2` is the default in `dreamerv3/configs.yaml`. Equivalent config presets:
+`hts2` is the default in `dreamerv3/configs_old.yaml`. Equivalent config presets:
 
 ```bash
 python -m dreamerv3.main_hts --configs hts_atari100k size12m hts_v1 --task atari100k_breakout
@@ -794,7 +794,7 @@ Scalar metrics are also writting as JSONL files.
 
 # Tips
 
-- All config options are listed in `dreamerv3/configs.yaml` and you can
+- All config options are listed in `dreamerv3/configs_old.yaml` and you can
   override them as flags from the command line.
 - The `debug` config block reduces the network size, batch size, duration
   between logs, and so on for fast debugging (but does not learn a good model).

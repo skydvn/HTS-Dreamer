@@ -58,7 +58,7 @@ defaults:
     report_batches: 1
     log_policy_video: True
     from_checkpoint: ''
-    from_checkpoint_regex: '.*'         # NEW: which checkpoint keys to load ('.*' = all matching)
+    from_checkpoint_regex: '.*'    # NEW: load all parameters matching this regex
     episode_timeout: 180
     actor_addr: 'localhost:{auto}'
     replay_addr: 'localhost:{auto}'
@@ -86,7 +86,7 @@ defaults:
     coordinator_address: ''
 
   agent:
-    loss_scales: {rec: 1.0, rew: 1.0, con: 1.0, dyn: 1.0, rep: 0.1, policy: 1.0, value: 1.0, repval: 0.3, htp_rec: 1.0, htp_pdyn: 1.0, htp_vicreg: 1.0}
+    loss_scales: {rec: 1.0, rew: 1.0, con: 1.0, dyn: 1.0, rep: 0.1, policy: 1.0, value: 1.0, repval: 0.3, htp_rec: 1.0, htp_pdyn: 1.0}
     opt: {lr: 4e-5, agc: 0.3, eps: 1e-20, beta1: 0.9, beta2: 0.999, momentum: True, wd: 0.0, schedule: const, warmup: 1000, anneal: 0}
     ac_grads: False
     dyn:
@@ -188,23 +188,15 @@ defaults:
       flat_topk: 48
       sgf_action_units: 18
 
-    # ------------------------------------------------------------------ HTP-WM
-    # The htp block. All new use_* flags MUST be declared here so that Slim-HTP
-    # presets can override them without triggering a config-loader KeyError.
     htp:
-      enabled: false            # turn on via htp_atari100k, htp_slim, etc.
-      grad_to_backbone: false   # false = post-hoc (App. A.3), true = fully joint
-      use_proj: true            # NEW: false → drop htp_proj + slow_htp_proj (Slim-HTP)
-      use_recon: true           # NEW: false → drop htp_recon (only valid when use_proj=false)
-      use_vicreg: false         # NEW: true → add per-prefix variance regularizer
-      vicreg_gamma: 1.0         # NEW: VICReg std threshold per coordinate
-      vicreg_scale: 1.0         # NEW: VICReg loss scale
+      enabled: false          # turn on via `htp_atari100k` preset below
+      grad_to_backbone: false # false = post-hoc (App. A.3), true = fully joint
       proj:
         dims: [ 128, 256, 512, 1024, 2048 ]
         hidden: 512
         layers: 2
         norm: rms
-        act: silu               # matches your codebase-wide default
+        act: silu             # matches your codebase-wide default
         separable: false
         outscale: 1.0
       recon:
@@ -214,8 +206,7 @@ defaults:
         act: silu
         outscale: 1.0
       pdyn:
-        dims: [ 128, 256, 512, 1024, 2048 ]   # NEW: must be declared for Slim-HTP overrides
-        strides: [ 16, 8, 4, 2, 1 ]           # non-increasing: compact prefix → longer stride
+        strides: [ 16, 8, 4, 2, 1 ]   # non-increasing: compact prefix -> longer stride
         hidden: 512
         layers: 2
         norm: rms
@@ -287,6 +278,8 @@ hts_v1:
 
 hts_v2:
   agent.hts.impl: hts2
+
+
 
 hts1_atari100k:
   task: atari100k_pong
@@ -556,18 +549,13 @@ debug:
     .*\.blocks: 4
     .*\.depth: 2
 
-# ============================================================================
-# HTP-WM presets
-# ============================================================================
-
 htp_atari100k:
   task: atari100k_pong
   run: {steps: 1.1e5, envs: 1, train_ratio: 256}
   logger.filter: 'score|length|fps|ratio|train/loss/|train/rand/|train/htp/'
   agent.htp.enabled: true
 
-# ---- Ablation toggles (compose on top of htp_atari100k): ----
-
+# Ablation toggles (compose on top of htp_atari100k):
 htp_separable:
   agent.htp.proj.separable: true            # Eq. 37 stronger isolation
 
@@ -587,58 +575,124 @@ htp_empty_projection:                       # HTP scaffold, no auxiliary supervi
   agent.loss_scales.htp_rec: 0.0
   agent.loss_scales.htp_pdyn: 0.0
 
+
 # ============================================================================
-# Slim-HTP presets
-#
-# IMPORTANT: pdyn.dims below is sized for `size25m` where:
-#     feat_dim = deter + stoch × classes = 3072 + 32 × 24 = 3840
-# The maximum prefix boundary (last entry) MUST equal feat_dim.
-#
-# If you run with a different size preset, you need to override pdyn.dims:
-#     size12m: feat_dim = 2048 + 32×16 = 2560  →  dims: [64, 128, 512, 1280, 2560]
-#     size25m: feat_dim = 3072 + 32×24 = 3840  →  dims: [128, 256, 512, 1024, 3840]  (default below)
-#     size50m: feat_dim = 4096 + 32×32 = 5120  →  dims: [128, 256, 640, 2048, 5120]
-#     size100m: feat_dim = 6144 + 32×48 = 7680 →  dims: [128, 384, 960, 2560, 7680]
-#     size200m: feat_dim = 8192 + 32×64 = 10240 →  dims: [128, 512, 2048, 5120, 10240]
-#
-# The agent.py raises a helpful ValueError if the max pdyn.dims > feat_dim.
+# Append these blocks to your existing configs.yaml.
+# They add Slim-HTP and its companion sanity arms.
 # ============================================================================
 
+# ---- Preset: Slim-HTP (paper's proposed lightweight variant) ----
+#
+# What's on:
+#   * HTP scaffold enabled
+#   * Multi-stride prefix dynamics (htp_pdyn) targeting prefixes of h_t
+#   * Gradients from htp_pdyn flow into the RSSM backbone (required — see below)
+# What's off:
+#   * htp_proj (no learned projection; z_t IS h_t)
+#   * slow_htp_proj (target for pdyn is sg(h_{t+Δ}), not a slow projection)
+#   * htp_recon (degenerate without a projection — see agent guard)
+#   * VICReg regularizer (off by default; enable via htp_slim_vicreg preset)
+#
+# Notes:
+#   * grad_to_backbone MUST be true. With use_proj=false and false backbone
+#     gradients, htp_pdyn becomes decorative (only F_ω trains, h_t unchanged).
+#     The htp_slim_postHoc preset below exists specifically to demonstrate
+#     this equivalence with baseline.
+#   * pdyn.dims must fit inside feat_dim = deter + stoch*classes = 10240
+#     (with your defaults). The suggested schedule keeps the compact prefix at
+#     128 and lets the full prefix use all 10240 dims.
+#
 htp_slim:
   agent.htp.enabled: true
-  agent.htp.grad_to_backbone: true          # required — with use_proj=false, HTP must reach RSSM
-  agent.htp.use_proj: false                 # drop htp_proj + slow_htp_proj (~6.5M params saved)
-  agent.htp.use_recon: false                # drop htp_recon (degenerate without projection)
+  agent.htp.grad_to_backbone: true
+  agent.htp.use_proj: false
+  agent.htp.use_recon: false
   agent.htp.use_vicreg: false
-  agent.htp.pdyn.dims: [128, 256, 512, 1024, 3840]   # sized for size25m; adjust for other sizes
+  agent.htp.pdyn.dims: [128, 512, 2048, 5120, 10240]
+  agent.htp.pdyn.strides: [16, 8, 4, 2, 1]
+  agent.htp.pdyn.hidden: 512
+  agent.htp.pdyn.layers: 2
+  agent.htp.pdyn.norm: rms
+  agent.htp.pdyn.act: silu
+  agent.htp.pdyn.outscale: 1.0
 
-htp_slim_vicreg:                            # Slim-HTP + variance regularizer (anti-collapse)
+# ---- Preset: Slim-HTP with VICReg anti-collapse ----
+#
+# Same as htp_slim but adds a variance regularizer on each prefix. Insurance
+# against representation collapse now that the slow-target mechanism is gone.
+# Use this if htp_slim shows signs of collapse (htp_pdyn loss diverging,
+# per-prefix mean std collapsing to zero, actor ent going to zero, etc.).
+#
+htp_slim_vicreg:
   agent.htp.enabled: true
   agent.htp.grad_to_backbone: true
   agent.htp.use_proj: false
   agent.htp.use_recon: false
   agent.htp.use_vicreg: true
-  agent.htp.vicreg_gamma: 1.0
-  agent.htp.vicreg_scale: 1.0
-  agent.htp.pdyn.dims: [128, 256, 512, 1024, 3840]
+  agent.htp.vicreg_gamma: 1.0        # threshold: per-coord std must exceed 1.0
+  agent.htp.vicreg_scale: 1.0        # loss scale for the regularizer
+  agent.htp.pdyn.dims: [128, 512, 2048, 5120, 10240]
+  agent.htp.pdyn.strides: [16, 8, 4, 2, 1]
+  agent.htp.pdyn.hidden: 512
+  agent.htp.pdyn.layers: 2
+  agent.htp.pdyn.norm: rms
+  agent.htp.pdyn.act: silu
+  agent.htp.pdyn.outscale: 1.0
 
-htp_slim_postHoc:                           # SANITY: should ≈ baseline (HTP has no effect)
+# ---- Preset: Slim-HTP post-hoc (SANITY CHECK — should equal baseline) ----
+#
+# Slim-HTP with grad_to_backbone=false. htp_pdyn trains its own predictors but
+# their gradients don't reach h_t (there's no projection to absorb them). This
+# means HTP has no way to influence the actor/critic through the representation.
+# Expected result: performance identical to `baseline`. If it isn't, something
+# is leaking gradients that shouldn't be.
+#
+# This preset exists to prove that the projection-or-backbone-grad requirement
+# in Slim-HTP is real. Include this arm in the ablation table.
+#
+htp_slim_postHoc:
   agent.htp.enabled: true
-  agent.htp.grad_to_backbone: false         # HTP grads can't reach RSSM and no projection → decorative
+  agent.htp.grad_to_backbone: false
   agent.htp.use_proj: false
   agent.htp.use_recon: false
   agent.htp.use_vicreg: false
-  agent.htp.pdyn.dims: [128, 256, 512, 1024, 3840]
+  agent.htp.pdyn.dims: [128, 512, 2048, 5120, 10240]
+  agent.htp.pdyn.strides: [16, 8, 4, 2, 1]
+  agent.htp.pdyn.hidden: 512
+  agent.htp.pdyn.layers: 2
+  agent.htp.pdyn.norm: rms
+  agent.htp.pdyn.act: silu
+  agent.htp.pdyn.outscale: 1.0
 
-# ---- Convenience: chained atari100k + slim in one --configs argument ----
-
+# ---- Convenience: launch Slim-HTP for Atari 100K ----
+#
+# Chains htp_atari100k with htp_slim so a single --configs argument runs the
+# right training regime and logs the right metrics.
+#
 htp_slim_atari100k:
   task: atari100k_pong
   run: {steps: 1.1e5, envs: 1, train_ratio: 256}
   logger.filter: 'score|length|fps|ratio|train/loss/|train/rand/|train/htp_'
+  # Layer htp_slim on top:
   agent.htp.enabled: true
   agent.htp.grad_to_backbone: true
   agent.htp.use_proj: false
   agent.htp.use_recon: false
   agent.htp.use_vicreg: false
-  agent.htp.pdyn.dims: [128, 256, 512, 1024, 3840]
+  agent.htp.pdyn.dims: [128, 512, 2048, 5120, 10240]
+  agent.htp.pdyn.strides: [16, 8, 4, 2, 1]
+  agent.htp.pdyn.hidden: 512
+  agent.htp.pdyn.layers: 2
+  agent.htp.pdyn.norm: rms
+  agent.htp.pdyn.act: silu
+  agent.htp.pdyn.outscale: 1.0
+
+# ---- Note on loss_scales ----
+#
+# The default `agent.loss_scales` dict in your `defaults` block lists both
+# htp_rec and htp_pdyn. The revised agent.py drops htp_rec from self.scales
+# automatically when use_recon=false (Slim-HTP), and adds htp_vicreg when
+# use_vicreg=true, so no changes are needed to loss_scales for these presets.
+#
+
+
