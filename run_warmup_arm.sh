@@ -1,11 +1,22 @@
 #!/usr/bin/env bash
-# run_warmup_arm.sh — two-phase training: naive DreamerV3 warmup, then any HTP arm.
+# run_warmup_arm.sh — two-phase training: HTP scaffold warmup, then full HTP arm.
 #
-# Phase 1: naive DreamerV3 for WARMUP_STEPS env steps.
-# Phase 2: resume the checkpoint with the chosen HTP arm, train to TOTAL_STEPS.
+# Phase 1: HTP with both auxiliary loss scales set to 0 (htp_empty_projection).
+#          Same module tree and head input dims as phase 2, so the checkpoint
+#          transfers cleanly. During phase 1 the projection S_ψ is trained
+#          purely by gradients from the actor/critic/reward/continuation heads.
+# Phase 2: Same architecture, HTP auxiliary losses turned ON (the chosen arm).
+#
+# NOTE: phase 1 is NOT pure naive DreamerV3 — that would fail because naive
+# Dreamer heads consume h_t (dim = feat_dim) whereas HTP heads consume
+# z_t = htp_proj(h_t) (dim = proj.dims[-1]). To warm up from pure Dreamer,
+# you'd need a code change to rebuild the heads at phase 2 (not currently
+# supported). This scaffold-warmup approach matches the paper's App. A.3
+# "temporal refinement" regime: the architecture is fixed from the start;
+# only the auxiliary supervision is switched on later.
 #
 # Both phases log to the SAME W&B run via WANDB_RUN_ID + WANDB_RESUME=allow,
-# tagged phase1_naive / phase2_<arm> under Job Type so you can filter in the UI.
+# tagged phase1_scaffold / phase2_<arm> under Job Type so you can filter.
 #
 # Usage:
 #   ./run_warmup_arm.sh <arm> <seed> [<task>] [<warmup_steps>] [<total_steps>] [<size>]
@@ -71,32 +82,64 @@ echo "Logdir:       $LOGDIR"                                                    
 echo "Arm:          $ARM"                                                       | tee -a "$MASTER_LOG"
 echo "Task:         $TASK"                                                      | tee -a "$MASTER_LOG"
 echo "Seed:         $SEED"                                                      | tee -a "$MASTER_LOG"
-echo "Warmup:       $WARMUP_STEPS env steps (naive DreamerV3)"                  | tee -a "$MASTER_LOG"
-echo "Then:         to $TOTAL_STEPS total steps with $ARM"                      | tee -a "$MASTER_LOG"
+echo "Warmup:       $WARMUP_STEPS env steps (HTP scaffold; aux losses OFF)"      | tee -a "$MASTER_LOG"
+echo "Then:         to $TOTAL_STEPS total steps with $ARM (aux losses ON)"      | tee -a "$MASTER_LOG"
 echo "Size:         $SIZE"                                                      | tee -a "$MASTER_LOG"
 echo "======================================================================" | tee -a "$MASTER_LOG"
 
-# ---------------------------------------------------- Phase 1: naive
-export WANDB_JOB_TYPE=phase1_naive
+# ---------------------------------------------------- Phase 1: HTP scaffold, aux losses OFF
+# We use htp_empty_projection (htp.enabled=true, both loss scales=0) rather than pure
+# naive Dreamer because the head input dimensions and module tree must match phase 2:
+#   * Naive Dreamer heads consume raw h_t (dim 10240).
+#   * HTP heads consume z_t = htp_proj(h_t) (dim 2048 with default dims).
+# If phase 1 were naive, phase 2 would crash on the first forward pass (shape mismatch)
+# and the checkpoint would be missing the htp_* module keys entirely.
+export WANDB_JOB_TYPE=phase1_scaffold
 P1_START=$(date '+%Y-%m-%d %H:%M:%S')
-echo "[$P1_START] PHASE 1 START — naive DreamerV3 to step $WARMUP_STEPS" | tee -a "$MASTER_LOG"
+echo "[$P1_START] PHASE 1 START — HTP scaffold (aux losses OFF) to step $WARMUP_STEPS" | tee -a "$MASTER_LOG"
 
 python -m dreamerv3.main_htp \
-  --configs atari100k "$SIZE" wandb \
+  --configs htp_atari100k htp_empty_projection "$SIZE" wandb \
   --task "$TASK" \
   --seed "$SEED" \
   --logdir "$LOGDIR" \
-  --run.steps "$WARMUP_STEPS" 2>&1 | tee -a "$MASTER_LOG"
+  --run.steps "$WARMUP_STEPS" \
+  --run.save_every 60 2>&1 | tee -a "$MASTER_LOG"
 
 P1_END=$(date '+%Y-%m-%d %H:%M:%S')
 echo "[$P1_END] PHASE 1 END" | tee -a "$MASTER_LOG"
 
-# Snapshot the phase-1 checkpoint so nothing overwrites it.
-if [ -f "$LOGDIR/checkpoint.ckpt" ]; then
+# Snapshot the phase-1 checkpoint DIRECTORY so phase 2's own saves don't
+# overwrite it. Embodied writes checkpoints as `<logdir>/ckpt/<timestamp>/`
+# with a `latest` pointer file at the top level. --run.from_checkpoint expects
+# the path to the ckpt/-style directory (embodied reads `latest` inside).
+if [ -d "$LOGDIR/ckpt" ] && [ -f "$LOGDIR/ckpt/latest" ]; then
+    cp -r "$LOGDIR/ckpt" "$LOGDIR/ckpt_phase1"
+    echo "Saved phase-1 snapshot: $LOGDIR/ckpt_phase1" | tee -a "$MASTER_LOG"
+    echo "  Latest checkpoint marker points to:" | tee -a "$MASTER_LOG"
+    echo "    $(cat "$LOGDIR/ckpt_phase1/latest" 2>/dev/null || echo '<unreadable>')" | tee -a "$MASTER_LOG"
+elif [ -d "$LOGDIR/ckpt" ]; then
+    echo "WARNING: $LOGDIR/ckpt/ exists but has no 'latest' pointer." | tee -a "$MASTER_LOG"
+    echo "         Phase 1 may have crashed mid-save. Copying anyway." | tee -a "$MASTER_LOG"
+    cp -r "$LOGDIR/ckpt" "$LOGDIR/ckpt_phase1"
+elif [ -f "$LOGDIR/checkpoint.ckpt" ]; then
     cp "$LOGDIR/checkpoint.ckpt" "$LOGDIR/checkpoint_phase1.ckpt"
-    echo "Saved phase-1 snapshot: $LOGDIR/checkpoint_phase1.ckpt" | tee -a "$MASTER_LOG"
+    echo "Saved phase-1 snapshot from checkpoint.ckpt (legacy format)" | tee -a "$MASTER_LOG"
 else
-    echo "WARNING: no checkpoint.ckpt found after phase 1 — phase 2 will start fresh." | tee -a "$MASTER_LOG"
+    echo "ERROR: no phase-1 checkpoint found in $LOGDIR after phase 1." | tee -a "$MASTER_LOG"
+    echo "       Directory contents:" | tee -a "$MASTER_LOG"
+    ls -la "$LOGDIR" 2>&1 | tee -a "$MASTER_LOG"
+    echo "       Phase 2 aborted." | tee -a "$MASTER_LOG"
+    exit 3
+fi
+
+if [ -d "$LOGDIR/ckpt_phase1" ]; then
+    PHASE1_CKPT="$LOGDIR/ckpt_phase1"
+elif [ -f "$LOGDIR/checkpoint_phase1.ckpt" ]; then
+    PHASE1_CKPT="$LOGDIR/checkpoint_phase1.ckpt"
+else
+    echo "ERROR: neither ckpt_phase1/ nor checkpoint_phase1.ckpt exists — aborting." | tee -a "$MASTER_LOG"
+    exit 3
 fi
 
 # ---------------------------------------------------- Phase 2: HTP arm
@@ -109,7 +152,8 @@ python -m dreamerv3.main_htp \
   --task "$TASK" \
   --seed "$SEED" \
   --logdir "$LOGDIR" \
-  --run.from_checkpoint "$LOGDIR/checkpoint_phase1.ckpt" \
+  --run.from_checkpoint "$PHASE1_CKPT" \
+  --run.from_checkpoint_regex '.*' \
   --run.steps "$TOTAL_STEPS" 2>&1 | tee -a "$MASTER_LOG"
 
 P2_END=$(date '+%Y-%m-%d %H:%M:%S')

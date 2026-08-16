@@ -117,22 +117,55 @@ export WANDB_JOB_TYPE=phase1_naive
 P1_START=$(date '+%Y-%m-%d %H:%M:%S')
 echo "[$P1_START] PHASE 1 START — pure naive DreamerV3 to step $WARMUP_STEPS" | tee -a "$MASTER_LOG"
 
+# --run.save_every 60 forces a checkpoint every 60s during phase 1. With the
+# default save_every=900s and a WARMUP_STEPS that finishes in <15 minutes,
+# no checkpoint would land on disk otherwise (embodied's behaviour on process
+# exit varies by version).
 python -m dreamerv3.main_htp \
   --configs $P1_CONFIGS \
   --task "$TASK" \
   --seed "$SEED" \
   --logdir "$LOGDIR" \
-  --run.steps "$WARMUP_STEPS" 2>&1 | tee -a "$MASTER_LOG"
+  --run.steps "$WARMUP_STEPS" \
+  --run.save_every 60 2>&1 | tee -a "$MASTER_LOG"
 
 P1_END=$(date '+%Y-%m-%d %H:%M:%S')
 echo "[$P1_END] PHASE 1 END" | tee -a "$MASTER_LOG"
 
-# Snapshot the phase-1 checkpoint so nothing overwrites it.
-if [ -f "$LOGDIR/checkpoint.ckpt" ]; then
+# Snapshot the phase-1 checkpoint DIRECTORY so phase 2's own saves don't
+# overwrite it. Embodied writes checkpoints as `<logdir>/ckpt/<timestamp>/`
+# with a `latest` pointer file at the top level. --run.from_checkpoint expects
+# the path to the ckpt/-style directory (embodied reads `latest` inside).
+if [ -d "$LOGDIR/ckpt" ] && [ -f "$LOGDIR/ckpt/latest" ]; then
+    cp -r "$LOGDIR/ckpt" "$LOGDIR/ckpt_phase1"
+    echo "Saved phase-1 snapshot: $LOGDIR/ckpt_phase1" | tee -a "$MASTER_LOG"
+    echo "  Latest checkpoint marker points to:" | tee -a "$MASTER_LOG"
+    echo "    $(cat "$LOGDIR/ckpt_phase1/latest" 2>/dev/null || echo '<unreadable>')" | tee -a "$MASTER_LOG"
+elif [ -d "$LOGDIR/ckpt" ]; then
+    echo "WARNING: $LOGDIR/ckpt/ exists but has no 'latest' pointer." | tee -a "$MASTER_LOG"
+    echo "         Phase 1 may have crashed mid-save. Copying anyway." | tee -a "$MASTER_LOG"
+    cp -r "$LOGDIR/ckpt" "$LOGDIR/ckpt_phase1"
+elif [ -f "$LOGDIR/checkpoint.ckpt" ]; then
+    # Older embodied versions that wrote a single .ckpt file
     cp "$LOGDIR/checkpoint.ckpt" "$LOGDIR/checkpoint_phase1.ckpt"
-    echo "Saved phase-1 snapshot: $LOGDIR/checkpoint_phase1.ckpt" | tee -a "$MASTER_LOG"
+    echo "Saved phase-1 snapshot from checkpoint.ckpt (legacy format)" | tee -a "$MASTER_LOG"
 else
-    echo "WARNING: no checkpoint.ckpt found after phase 1 — phase 2 will start fresh." | tee -a "$MASTER_LOG"
+    echo "ERROR: no phase-1 checkpoint found in $LOGDIR after phase 1." | tee -a "$MASTER_LOG"
+    echo "       Directory contents:" | tee -a "$MASTER_LOG"
+    ls -la "$LOGDIR" 2>&1 | tee -a "$MASTER_LOG"
+    echo "       Phase 2 aborted." | tee -a "$MASTER_LOG"
+    exit 3
+fi
+
+# Resolve the checkpoint path for phase 2. Prefer the directory snapshot;
+# fall back to the legacy file if that's what phase 1 produced.
+if [ -d "$LOGDIR/ckpt_phase1" ]; then
+    PHASE1_CKPT="$LOGDIR/ckpt_phase1"
+elif [ -f "$LOGDIR/checkpoint_phase1.ckpt" ]; then
+    PHASE1_CKPT="$LOGDIR/checkpoint_phase1.ckpt"
+else
+    echo "ERROR: neither ckpt_phase1/ nor checkpoint_phase1.ckpt exists — aborting." | tee -a "$MASTER_LOG"
+    exit 3
 fi
 
 # ---------------------------------------------------- Phase 2: Slim-HTP
@@ -145,7 +178,7 @@ python -m dreamerv3.main_htp \
   --task "$TASK" \
   --seed "$SEED" \
   --logdir "$LOGDIR" \
-  --run.from_checkpoint "$LOGDIR/checkpoint_phase1.ckpt" \
+  --run.from_checkpoint "$PHASE1_CKPT" \
   --run.from_checkpoint_regex '.*' \
   --run.steps "$TOTAL_STEPS" 2>&1 | tee -a "$MASTER_LOG"
 
