@@ -88,7 +88,7 @@ STAMP=$(date +%Y%m%d_%H%M%S)
 RUN_ID="warmup_slim_${ARM}_${TASK}_seed${SEED}_${STAMP}"
 LOGDIR="/root/logdir/${RUN_ID}"
 
-export WANDB_PROJECT="${WANDB_PROJECT:-HTS-Dreamer}"
+export WANDB_PROJECT="${WANDB_PROJECT:-htp-wm}"
 export WANDB_GROUP="${WANDB_GROUP:-slim-warmup-ablation}"
 export WANDB_RUN_ID="$RUN_ID"        # both phases append to one run
 export WANDB_RESUME=allow            # permits phase 2 to attach
