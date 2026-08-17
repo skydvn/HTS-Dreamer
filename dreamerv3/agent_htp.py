@@ -355,6 +355,14 @@ class Agent_HTP(embodied.jax.Agent):
       act_seq_full = jnp.concatenate(
           [act_flat_full[:, 1:], pad_last], axis=1)    # (B, T, A)
 
+      # DIAGNOSTIC — remove after debugging
+      print(f'[DIAG] htp_use_proj={self.htp_use_proj}')
+      print(f'[DIAG] h_t.shape={h_t.shape}')
+      print(f'[DIAG] z_t.shape={z_t.shape}')
+      print(f'[DIAG] z_slow.shape={z_slow.shape}')
+      print(f'[DIAG] htp_pdyn.dims={self.htp_pdyn.dims}')
+      print(f'[DIAG] repr_dim={self.repr_dim}')
+
       pdyn_loss, pdyn_per_level = self.htp_pdyn(z_t, z_slow, act_seq_full)
       losses['htp_pdyn'] = pdyn_loss
       for info in pdyn_per_level:
