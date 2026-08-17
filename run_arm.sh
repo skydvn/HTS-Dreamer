@@ -11,9 +11,14 @@
 #   ./run_arm.sh htp_joint 0 atari100k_breakout size12m
 #
 # Arms (must match the tracker exactly):
-#   baseline  htp_empty_projection  htp_full  htp_recon_only  htp_pdyn_only
-#   htp_separable  htp_joint  htp_reverse_strides
-#   htp_slim  htp_slim_vicreg  htp_slim_postHoc
+#   Reference:        baseline  htp_full
+#   Paper ablations:  htp_empty_projection  htp_recon_only  htp_pdyn_only
+#                     htp_separable  htp_joint  htp_reverse_strides
+#   Slim core:        htp_slim  htp_slim_postHoc
+#   Slim hierarchy:   htp_slim_L3  htp_slim_L2  htp_slim_L1
+#   Slim strides:     htp_slim_reverse_strides  htp_slim_all_stride1  htp_slim_all_stride16
+#   Slim prefix:      htp_slim_compact_64  htp_slim_compact_512
+#   Slim scale:       htp_slim_scale_01  htp_slim_scale_10
 #
 # Writes stdout + timestamps to  runlogs/<run_name>.log
 # Names the W&B run to match the tracker row via WANDB_RUN_NAME.
@@ -27,29 +32,51 @@ SIZE=${4:-size25m}
 
 # ---------------------------------------------------- arm -> --configs chain
 case "$ARM" in
-  baseline)              CONFIGS="atari100k $SIZE wandb" ;;
-  htp_empty_projection)  CONFIGS="htp_atari100k htp_empty_projection $SIZE wandb" ;;
-  htp_full)              CONFIGS="htp_atari100k $SIZE wandb" ;;
-  htp_recon_only)        CONFIGS="htp_atari100k htp_matryoshka_only $SIZE wandb" ;;
-  htp_pdyn_only)         CONFIGS="htp_atari100k htp_pdyn_only $SIZE wandb" ;;
-  htp_separable)         CONFIGS="htp_atari100k htp_separable $SIZE wandb" ;;
-  htp_joint)             CONFIGS="htp_atari100k htp_joint $SIZE wandb" ;;
-  htp_reverse_strides)   CONFIGS="htp_atari100k htp_reverse_strides $SIZE wandb" ;;
-  htp_slim)              CONFIGS="htp_atari100k htp_slim $SIZE wandb" ;;
-  htp_slim_vicreg)       CONFIGS="htp_atari100k htp_slim_vicreg $SIZE wandb" ;;
-  htp_slim_postHoc)      CONFIGS="htp_atari100k htp_slim_postHoc $SIZE wandb" ;;
+  # ---- Reference ----
+  baseline)                  CONFIGS="atari100k $SIZE wandb" ;;
+  htp_full)                  CONFIGS="htp_atari100k $SIZE wandb" ;;
+  # ---- Paper's HTP ablations ----
+  htp_empty_projection)      CONFIGS="htp_atari100k htp_empty_projection $SIZE wandb" ;;
+  htp_recon_only)            CONFIGS="htp_atari100k htp_matryoshka_only $SIZE wandb" ;;
+  htp_pdyn_only)             CONFIGS="htp_atari100k htp_pdyn_only $SIZE wandb" ;;
+  htp_separable)             CONFIGS="htp_atari100k htp_separable $SIZE wandb" ;;
+  htp_joint)                 CONFIGS="htp_atari100k htp_joint $SIZE wandb" ;;
+  htp_reverse_strides)       CONFIGS="htp_atari100k htp_reverse_strides $SIZE wandb" ;;
+  # ---- Slim-HTP core ----
+  htp_slim)                  CONFIGS="htp_atari100k htp_slim $SIZE wandb" ;;
+  htp_slim_postHoc)          CONFIGS="htp_atari100k htp_slim_postHoc $SIZE wandb" ;;
+  # ---- Slim-HTP hierarchy ablations ----
+  htp_slim_L3)               CONFIGS="htp_atari100k htp_slim_L3 $SIZE wandb" ;;
+  htp_slim_L2)               CONFIGS="htp_atari100k htp_slim_L2 $SIZE wandb" ;;
+  htp_slim_L1)               CONFIGS="htp_atari100k htp_slim_L1 $SIZE wandb" ;;
+  # ---- Slim-HTP stride ablations ----
+  htp_slim_reverse_strides)  CONFIGS="htp_atari100k htp_slim_reverse_strides $SIZE wandb" ;;
+  htp_slim_all_stride1)      CONFIGS="htp_atari100k htp_slim_all_stride1 $SIZE wandb" ;;
+  htp_slim_all_stride16)     CONFIGS="htp_atari100k htp_slim_all_stride16 $SIZE wandb" ;;
+  # ---- Slim-HTP compact prefix ablations ----
+  htp_slim_compact_64)       CONFIGS="htp_atari100k htp_slim_compact_64 $SIZE wandb" ;;
+  htp_slim_compact_512)      CONFIGS="htp_atari100k htp_slim_compact_512 $SIZE wandb" ;;
+  # ---- Slim-HTP loss scale ablations ----
+  htp_slim_scale_01)         CONFIGS="htp_atari100k htp_slim_scale_01 $SIZE wandb" ;;
+  htp_slim_scale_10)         CONFIGS="htp_atari100k htp_slim_scale_10 $SIZE wandb" ;;
   *)
     echo "ERROR: unknown arm '$ARM'" >&2
-    echo "Valid: baseline, htp_empty_projection, htp_full, htp_recon_only, htp_pdyn_only," >&2
-    echo "       htp_separable, htp_joint, htp_reverse_strides," >&2
-    echo "       htp_slim, htp_slim_vicreg, htp_slim_postHoc" >&2
+    echo "Valid arms:" >&2
+    echo "  Reference:        baseline, htp_full" >&2
+    echo "  Paper ablations:  htp_empty_projection, htp_recon_only, htp_pdyn_only," >&2
+    echo "                    htp_separable, htp_joint, htp_reverse_strides" >&2
+    echo "  Slim core:        htp_slim, htp_slim_postHoc" >&2
+    echo "  Slim hierarchy:   htp_slim_L3, htp_slim_L2, htp_slim_L1" >&2
+    echo "  Slim strides:     htp_slim_reverse_strides, htp_slim_all_stride1, htp_slim_all_stride16" >&2
+    echo "  Slim prefix:      htp_slim_compact_64, htp_slim_compact_512" >&2
+    echo "  Slim scale:       htp_slim_scale_01, htp_slim_scale_10" >&2
     exit 2
     ;;
 esac
 
 # ---------------------------------------------------- W&B labels (match the tracker)
 RUN_NAME="${ARM}_${TASK}_seed${SEED}"
-export WANDB_PROJECT="${WANDB_PROJECT:-HTS-Dreamer}"
+export WANDB_PROJECT="${WANDB_PROJECT:-htp-wm}"
 export WANDB_GROUP="${WANDB_GROUP:-${TASK}-ablation}"
 export WANDB_JOB_TYPE="$ARM"
 export WANDB_RUN_NAME="$RUN_NAME"

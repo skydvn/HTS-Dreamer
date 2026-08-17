@@ -612,16 +612,6 @@ htp_slim:
   agent.htp.use_vicreg: false
   agent.htp.pdyn.dims: [128, 256, 512, 1024, 3840]   # sized for size25m; adjust for other sizes
 
-htp_slim_vicreg:                            # Slim-HTP + variance regularizer (anti-collapse)
-  agent.htp.enabled: true
-  agent.htp.grad_to_backbone: true
-  agent.htp.use_proj: false
-  agent.htp.use_recon: false
-  agent.htp.use_vicreg: true
-  agent.htp.vicreg_gamma: 1.0
-  agent.htp.vicreg_scale: 1.0
-  agent.htp.pdyn.dims: [128, 256, 512, 1024, 3840]
-
 htp_slim_postHoc:                           # SANITY: should ≈ baseline (HTP has no effect)
   agent.htp.enabled: true
   agent.htp.grad_to_backbone: false         # HTP grads can't reach RSSM and no projection → decorative
@@ -643,13 +633,19 @@ htp_slim_atari100k:
   agent.htp.use_vicreg: false
   agent.htp.pdyn.dims: [128, 256, 512, 1024, 3840]
 
-
 # ============================================================================
-# Slim-HTP ablations (append to configs.yaml)
+# Slim-HTP ablation presets
+#
+# All chained on top of htp_atari100k. All keep use_proj=false, use_recon=false,
+# grad_to_backbone=true (Slim requirements). Only pdyn.dims, pdyn.strides,
+# or the loss scale change per ablation.
+#
+# pdyn.dims max = 3840 = feat_dim for size25m. Adjust if using another size.
 # ============================================================================
 
-# ---- Level count ----
-htp_slim_L3:
+# ---- Level count ablations ----
+
+htp_slim_L3:                                # 3 levels (was 5 in htp_slim)
   agent.htp.enabled: true
   agent.htp.grad_to_backbone: true
   agent.htp.use_proj: false
@@ -658,7 +654,7 @@ htp_slim_L3:
   agent.htp.pdyn.dims:    [128, 1024, 3840]
   agent.htp.pdyn.strides: [16, 4, 1]
 
-htp_slim_L2:
+htp_slim_L2:                                # 2 levels
   agent.htp.enabled: true
   agent.htp.grad_to_backbone: true
   agent.htp.use_proj: false
@@ -667,7 +663,7 @@ htp_slim_L2:
   agent.htp.pdyn.dims:    [128, 3840]
   agent.htp.pdyn.strides: [16, 1]
 
-htp_slim_L1:
+htp_slim_L1:                                # 1 level — pure multi-step, no hierarchy
   agent.htp.enabled: true
   agent.htp.grad_to_backbone: true
   agent.htp.use_proj: false
@@ -677,7 +673,8 @@ htp_slim_L1:
   agent.htp.pdyn.strides: [1]
 
 # ---- Stride ablations ----
-htp_slim_reverse_strides:
+
+htp_slim_reverse_strides:                   # flip compact→long pairing
   agent.htp.enabled: true
   agent.htp.grad_to_backbone: true
   agent.htp.use_proj: false
@@ -686,7 +683,7 @@ htp_slim_reverse_strides:
   agent.htp.pdyn.dims:    [128, 256, 512, 1024, 3840]
   agent.htp.pdyn.strides: [1, 2, 4, 8, 16]
 
-htp_slim_all_stride1:
+htp_slim_all_stride1:                       # hierarchy but no temporal specialization
   agent.htp.enabled: true
   agent.htp.grad_to_backbone: true
   agent.htp.use_proj: false
@@ -695,7 +692,7 @@ htp_slim_all_stride1:
   agent.htp.pdyn.dims:    [128, 256, 512, 1024, 3840]
   agent.htp.pdyn.strides: [1, 1, 1, 1, 1]
 
-htp_slim_all_stride16:
+htp_slim_all_stride16:                      # hierarchy but all long-horizon
   agent.htp.enabled: true
   agent.htp.grad_to_backbone: true
   agent.htp.use_proj: false
@@ -704,8 +701,9 @@ htp_slim_all_stride16:
   agent.htp.pdyn.dims:    [128, 256, 512, 1024, 3840]
   agent.htp.pdyn.strides: [16, 16, 16, 16, 16]
 
-# ---- Compact-prefix size ----
-htp_slim_compact_64:
+# ---- Compact-prefix size ablations ----
+
+htp_slim_compact_64:                        # smaller compact prefix
   agent.htp.enabled: true
   agent.htp.grad_to_backbone: true
   agent.htp.use_proj: false
@@ -714,7 +712,7 @@ htp_slim_compact_64:
   agent.htp.pdyn.dims:    [64, 256, 512, 1024, 3840]
   agent.htp.pdyn.strides: [16, 8, 4, 2, 1]
 
-htp_slim_compact_512:
+htp_slim_compact_512:                       # larger compact prefix
   agent.htp.enabled: true
   agent.htp.grad_to_backbone: true
   agent.htp.use_proj: false
@@ -723,8 +721,9 @@ htp_slim_compact_512:
   agent.htp.pdyn.dims:    [512, 1024, 2048, 3072, 3840]
   agent.htp.pdyn.strides: [16, 8, 4, 2, 1]
 
-# ---- Loss scale sweep ----
-htp_slim_scale_01:
+# ---- Loss scale ablations ----
+
+htp_slim_scale_01:                          # pdyn at 0.1× default
   agent.htp.enabled: true
   agent.htp.grad_to_backbone: true
   agent.htp.use_proj: false
@@ -734,7 +733,7 @@ htp_slim_scale_01:
   agent.htp.pdyn.strides: [16, 8, 4, 2, 1]
   agent.loss_scales.htp_pdyn: 0.1
 
-htp_slim_scale_10:
+htp_slim_scale_10:                          # pdyn at 10× default
   agent.htp.enabled: true
   agent.htp.grad_to_backbone: true
   agent.htp.use_proj: false
