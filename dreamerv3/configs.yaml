@@ -642,3 +642,104 @@ htp_slim_atari100k:
   agent.htp.use_recon: false
   agent.htp.use_vicreg: false
   agent.htp.pdyn.dims: [128, 256, 512, 1024, 3840]
+
+
+# ============================================================================
+# Slim-HTP ablations (append to configs.yaml)
+# ============================================================================
+
+# ---- Level count ----
+htp_slim_L3:
+  agent.htp.enabled: true
+  agent.htp.grad_to_backbone: true
+  agent.htp.use_proj: false
+  agent.htp.use_recon: false
+  agent.htp.use_vicreg: false
+  agent.htp.pdyn.dims:    [128, 1024, 3840]
+  agent.htp.pdyn.strides: [16, 4, 1]
+
+htp_slim_L2:
+  agent.htp.enabled: true
+  agent.htp.grad_to_backbone: true
+  agent.htp.use_proj: false
+  agent.htp.use_recon: false
+  agent.htp.use_vicreg: false
+  agent.htp.pdyn.dims:    [128, 3840]
+  agent.htp.pdyn.strides: [16, 1]
+
+htp_slim_L1:
+  agent.htp.enabled: true
+  agent.htp.grad_to_backbone: true
+  agent.htp.use_proj: false
+  agent.htp.use_recon: false
+  agent.htp.use_vicreg: false
+  agent.htp.pdyn.dims:    [3840]
+  agent.htp.pdyn.strides: [1]
+
+# ---- Stride ablations ----
+htp_slim_reverse_strides:
+  agent.htp.enabled: true
+  agent.htp.grad_to_backbone: true
+  agent.htp.use_proj: false
+  agent.htp.use_recon: false
+  agent.htp.use_vicreg: false
+  agent.htp.pdyn.dims:    [128, 256, 512, 1024, 3840]
+  agent.htp.pdyn.strides: [1, 2, 4, 8, 16]
+
+htp_slim_all_stride1:
+  agent.htp.enabled: true
+  agent.htp.grad_to_backbone: true
+  agent.htp.use_proj: false
+  agent.htp.use_recon: false
+  agent.htp.use_vicreg: false
+  agent.htp.pdyn.dims:    [128, 256, 512, 1024, 3840]
+  agent.htp.pdyn.strides: [1, 1, 1, 1, 1]
+
+htp_slim_all_stride16:
+  agent.htp.enabled: true
+  agent.htp.grad_to_backbone: true
+  agent.htp.use_proj: false
+  agent.htp.use_recon: false
+  agent.htp.use_vicreg: false
+  agent.htp.pdyn.dims:    [128, 256, 512, 1024, 3840]
+  agent.htp.pdyn.strides: [16, 16, 16, 16, 16]
+
+# ---- Compact-prefix size ----
+htp_slim_compact_64:
+  agent.htp.enabled: true
+  agent.htp.grad_to_backbone: true
+  agent.htp.use_proj: false
+  agent.htp.use_recon: false
+  agent.htp.use_vicreg: false
+  agent.htp.pdyn.dims:    [64, 256, 512, 1024, 3840]
+  agent.htp.pdyn.strides: [16, 8, 4, 2, 1]
+
+htp_slim_compact_512:
+  agent.htp.enabled: true
+  agent.htp.grad_to_backbone: true
+  agent.htp.use_proj: false
+  agent.htp.use_recon: false
+  agent.htp.use_vicreg: false
+  agent.htp.pdyn.dims:    [512, 1024, 2048, 3072, 3840]
+  agent.htp.pdyn.strides: [16, 8, 4, 2, 1]
+
+# ---- Loss scale sweep ----
+htp_slim_scale_01:
+  agent.htp.enabled: true
+  agent.htp.grad_to_backbone: true
+  agent.htp.use_proj: false
+  agent.htp.use_recon: false
+  agent.htp.use_vicreg: false
+  agent.htp.pdyn.dims:    [128, 256, 512, 1024, 3840]
+  agent.htp.pdyn.strides: [16, 8, 4, 2, 1]
+  agent.loss_scales.htp_pdyn: 0.1
+
+htp_slim_scale_10:
+  agent.htp.enabled: true
+  agent.htp.grad_to_backbone: true
+  agent.htp.use_proj: false
+  agent.htp.use_recon: false
+  agent.htp.use_vicreg: false
+  agent.htp.pdyn.dims:    [128, 256, 512, 1024, 3840]
+  agent.htp.pdyn.strides: [16, 8, 4, 2, 1]
+  agent.loss_scales.htp_pdyn: 10.0
