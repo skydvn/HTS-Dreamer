@@ -157,14 +157,40 @@ else
     exit 3
 fi
 
-# Resolve the checkpoint path for phase 2. Prefer the directory snapshot;
-# fall back to the legacy file if that's what phase 1 produced.
-if [ -d "$LOGDIR/ckpt_phase1" ]; then
-    PHASE1_CKPT="$LOGDIR/ckpt_phase1"
+# Resolve the checkpoint path for phase 2. The loader in
+# elements/checkpoint.py:load() expects `path` to be a DIRECTORY containing
+# the .pkl files directly (agent.pkl, replay.pkl, step.pkl). Embodied's
+# writer creates `ckpt/<timestamp>/{agent,replay,step}.pkl` and writes the
+# timestamp string into `ckpt/latest`. So we resolve `latest` to point at
+# the timestamped subdir.
+if [ -d "$LOGDIR/ckpt_phase1" ] && [ -f "$LOGDIR/ckpt_phase1/latest" ]; then
+    LATEST_TS=$(cat "$LOGDIR/ckpt_phase1/latest" 2>/dev/null | tr -d ' \n\r')
+    if [ -z "$LATEST_TS" ]; then
+        echo "ERROR: $LOGDIR/ckpt_phase1/latest is empty. Cannot resolve checkpoint." | tee -a "$MASTER_LOG"
+        exit 3
+    fi
+    if [ ! -d "$LOGDIR/ckpt_phase1/$LATEST_TS" ]; then
+        echo "ERROR: latest points to '$LATEST_TS' but $LOGDIR/ckpt_phase1/$LATEST_TS does not exist." | tee -a "$MASTER_LOG"
+        exit 3
+    fi
+    PHASE1_CKPT="$LOGDIR/ckpt_phase1/$LATEST_TS"
+    echo "Resolved phase-1 checkpoint: $PHASE1_CKPT" | tee -a "$MASTER_LOG"
+    echo "  Contents:" | tee -a "$MASTER_LOG"
+    ls -la "$PHASE1_CKPT" 2>&1 | sed 's/^/    /' | tee -a "$MASTER_LOG"
+elif [ -d "$LOGDIR/ckpt_phase1" ]; then
+    # Fallback: no `latest` pointer, look for the newest timestamped subdir
+    LATEST_TS=$(ls -1 "$LOGDIR/ckpt_phase1" 2>/dev/null | grep -E '^[0-9]{8}T[0-9]{6}' | sort | tail -1)
+    if [ -z "$LATEST_TS" ]; then
+        echo "ERROR: no timestamped checkpoint subdir found under $LOGDIR/ckpt_phase1/" | tee -a "$MASTER_LOG"
+        exit 3
+    fi
+    PHASE1_CKPT="$LOGDIR/ckpt_phase1/$LATEST_TS"
+    echo "Resolved phase-1 checkpoint (no latest pointer, using newest): $PHASE1_CKPT" | tee -a "$MASTER_LOG"
 elif [ -f "$LOGDIR/checkpoint_phase1.ckpt" ]; then
     PHASE1_CKPT="$LOGDIR/checkpoint_phase1.ckpt"
+    echo "Using legacy checkpoint: $PHASE1_CKPT" | tee -a "$MASTER_LOG"
 else
-    echo "ERROR: neither ckpt_phase1/ nor checkpoint_phase1.ckpt exists — aborting." | tee -a "$MASTER_LOG"
+    echo "ERROR: no phase-1 checkpoint snapshot exists — aborting." | tee -a "$MASTER_LOG"
     exit 3
 fi
 

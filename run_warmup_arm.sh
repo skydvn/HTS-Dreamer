@@ -65,7 +65,7 @@ STAMP=$(date +%Y%m%d_%H%M%S)
 RUN_ID="warmup_${ARM}_${TASK}_seed${SEED}_${STAMP}"
 LOGDIR="/root/logdir/${RUN_ID}"
 
-export WANDB_PROJECT="${WANDB_PROJECT:-HTS-Dreamer}"
+export WANDB_PROJECT="${WANDB_PROJECT:-htp-wm}"
 export WANDB_GROUP="${WANDB_GROUP:-warmup-ablation}"
 export WANDB_RUN_ID="$RUN_ID"           # ← both phases append to one run
 export WANDB_RESUME=allow               # ← permits phase 2 to attach
@@ -133,12 +133,33 @@ else
     exit 3
 fi
 
-if [ -d "$LOGDIR/ckpt_phase1" ]; then
-    PHASE1_CKPT="$LOGDIR/ckpt_phase1"
+if [ -d "$LOGDIR/ckpt_phase1" ] && [ -f "$LOGDIR/ckpt_phase1/latest" ]; then
+    LATEST_TS=$(cat "$LOGDIR/ckpt_phase1/latest" 2>/dev/null | tr -d ' \n\r')
+    if [ -z "$LATEST_TS" ]; then
+        echo "ERROR: $LOGDIR/ckpt_phase1/latest is empty. Cannot resolve checkpoint." | tee -a "$MASTER_LOG"
+        exit 3
+    fi
+    if [ ! -d "$LOGDIR/ckpt_phase1/$LATEST_TS" ]; then
+        echo "ERROR: latest points to '$LATEST_TS' but $LOGDIR/ckpt_phase1/$LATEST_TS does not exist." | tee -a "$MASTER_LOG"
+        exit 3
+    fi
+    PHASE1_CKPT="$LOGDIR/ckpt_phase1/$LATEST_TS"
+    echo "Resolved phase-1 checkpoint: $PHASE1_CKPT" | tee -a "$MASTER_LOG"
+    echo "  Contents:" | tee -a "$MASTER_LOG"
+    ls -la "$PHASE1_CKPT" 2>&1 | sed 's/^/    /' | tee -a "$MASTER_LOG"
+elif [ -d "$LOGDIR/ckpt_phase1" ]; then
+    LATEST_TS=$(ls -1 "$LOGDIR/ckpt_phase1" 2>/dev/null | grep -E '^[0-9]{8}T[0-9]{6}' | sort | tail -1)
+    if [ -z "$LATEST_TS" ]; then
+        echo "ERROR: no timestamped checkpoint subdir found under $LOGDIR/ckpt_phase1/" | tee -a "$MASTER_LOG"
+        exit 3
+    fi
+    PHASE1_CKPT="$LOGDIR/ckpt_phase1/$LATEST_TS"
+    echo "Resolved phase-1 checkpoint (no latest pointer, using newest): $PHASE1_CKPT" | tee -a "$MASTER_LOG"
 elif [ -f "$LOGDIR/checkpoint_phase1.ckpt" ]; then
     PHASE1_CKPT="$LOGDIR/checkpoint_phase1.ckpt"
+    echo "Using legacy checkpoint: $PHASE1_CKPT" | tee -a "$MASTER_LOG"
 else
-    echo "ERROR: neither ckpt_phase1/ nor checkpoint_phase1.ckpt exists — aborting." | tee -a "$MASTER_LOG"
+    echo "ERROR: no phase-1 checkpoint snapshot exists — aborting." | tee -a "$MASTER_LOG"
     exit 3
 fi
 
